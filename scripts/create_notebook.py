@@ -1,0 +1,687 @@
+"""
+Generateur de notebooks/modeling_local.ipynb.
+
+Version sans MLflow — memes modeles et metriques que modeling_mlflow.ipynb,
+utile pour explorer rapidement sans serveur de tracking.
+Execution : python scripts/create_notebook.py
+"""
+from pathlib import Path
+import json, uuid
+
+# Racine du projet : scripts/ -> racine/
+_ROOT = Path(__file__).resolve().parent.parent
+
+
+def gid():
+    """Retourne un identifiant de cellule unique sur 8 caracteres."""
+    return uuid.uuid4().hex[:8]
+
+
+def md(s):
+    """Cree une cellule Markdown a partir d'une chaine de texte."""
+    return {"cell_type": "markdown", "id": gid(), "metadata": {}, "source": s}
+
+
+def code(s):
+    """Cree une cellule de code Python a partir d'une chaine de texte."""
+    return {
+        "cell_type": "code", "execution_count": None,
+        "id": gid(), "metadata": {}, "outputs": [], "source": s,
+    }
+
+cells = []
+
+# Titre
+cells.append(md(
+    "# Etapes 3 & 4 - Modelisation locale (sans MLflow)\n\n"
+    "**Etape 3** : comparaison de 3 modeles avec validation croisee stratifiee.\n\n"
+    "**Etape 4** : optimisation des hyperparametres (GridSearchCV / RandomizedSearchCV) et du seuil metier.\n\n"
+    "Metriques calculees sur les predictions **OOF** (Out-Of-Fold) "
+    "avec le **seuil optimal** minimisant `10 x FN + 1 x FP`."
+))
+
+# Imports
+cells.append(code(
+"import os, sys, re, warnings\n"
+"import numpy as np\n"
+"import pandas as pd\n"
+"import matplotlib.pyplot as plt\n"
+"import seaborn as sns\n"
+"from IPython.display import display\n"
+"\n"
+"from sklearn.model_selection import (\n"
+"    StratifiedKFold,\n"
+"    RandomizedSearchCV,\n"
+"    GridSearchCV,\n"
+"    train_test_split,\n"
+")\n"
+"from sklearn.metrics import (\n"
+"    roc_auc_score,\n"
+"    average_precision_score,\n"
+"    roc_curve,\n"
+"    f1_score,\n"
+"    recall_score,\n"
+"    precision_score,\n"
+"    confusion_matrix,\n"
+")\n"
+"from sklearn.dummy import DummyClassifier\n"
+"from sklearn.linear_model import LogisticRegression\n"
+"from sklearn.impute import SimpleImputer\n"
+"from sklearn.preprocessing import StandardScaler\n"
+"from sklearn.pipeline import Pipeline\n"
+"\n"
+"import lightgbm as lgb\n"
+"from lightgbm import LGBMClassifier\n"
+"\n"
+"warnings.filterwarnings('ignore')\n"
+"\n"
+"# Acces au module src/\n"
+"sys.path.append(os.path.abspath('..'))\n"
+"\n"
+"from src.config import (\n"
+"    RANDOM_STATE,\n"
+"    N_FOLDS,\n"
+"    TEST_SIZE,\n"
+"    TARGET_COL,\n"
+"    ID_COL,\n"
+"    PROCESSED_DIR,\n"
+"    MODELS_DIR,\n"
+"    LGB_DEVICE,\n"
+")\n"
+"\n"
+"print(f'Device  : {LGB_DEVICE}')\n"
+"print(f'N_FOLDS : {N_FOLDS}  |  RANDOM_STATE : {RANDOM_STATE}')\n"
+))
+
+# Chargement
+cells.append(md("## 1. Chargement des donnees"))
+cells.append(code(
+"train_df = pd.read_csv(PROCESSED_DIR / 'train_processed_global.csv')\n"
+"print(f'Shape  : {train_df.shape}')\n"
+"print(f'Defaut : {train_df[TARGET_COL].mean():.2%}')\n"
+))
+
+# X, y
+cells.append(code(
+"# Colonnes a exclure : identifiants et cible\n"
+"COLS_EXCLUDE = [TARGET_COL, ID_COL, 'SK_ID_BUREAU', 'SK_ID_PREV', 'index']\n"
+"features = [c for c in train_df.columns if c not in COLS_EXCLUDE]\n"
+"\n"
+"X = train_df[features].copy()\n"
+"y = train_df[TARGET_COL].copy()\n"
+"\n"
+"# Nettoyage des noms de colonnes — LightGBM rejette les caracteres speciaux\n"
+"X.columns = [re.sub(r'[^A-Za-z0-9_]+', '_', c) for c in X.columns]\n"
+"\n"
+"print(f'X : {X.shape}  |  Classes : {y.value_counts().to_dict()}')\n"
+))
+
+# === TRAIN / TEST SPLIT ===
+cells.append(md(
+    "## 1.1 Split train / test stratifie\n\n"
+    "Separation **unique** avant tout entrainement. "
+    "`X_test` et `y_test` ne servent qu'a l'evaluation finale non biaisee — "
+    "jamais utilises pendant la CV ni le reglage des hyperparametres."
+))
+cells.append(code(
+"# Split unique : ratio TEST_SIZE defini dans src/config.py\n"
+"X_train, X_test, y_train, y_test = train_test_split(\n"
+"    X, y,\n"
+"    test_size=TEST_SIZE,\n"
+"    stratify=y,\n"
+"    random_state=RANDOM_STATE,\n"
+")\n"
+"\n"
+"print(f'Train : {X_train.shape}  |  Test : {X_test.shape}')\n"
+"print(f'Taux defaut  train : {y_train.mean():.2%}  |  test : {y_test.mean():.2%}')\n"
+))
+
+# Helpers metriques
+cells.append(md("## 2. Fonctions utilitaires"))
+cells.append(code(
+"def compute_business_cost(y_true, y_pred, fn_cost=10, fp_cost=1):\n"
+"    \"\"\"Cout metier asymetrique : fn_cost * FN + fp_cost * FP.\n"
+"\n"
+"    Un defaillant manque (FN) coute 10x plus qu'un bon client refuse (FP).\n"
+"    Retourne (cout_total, nb_fn, nb_fp).\n"
+"    \"\"\"\n"
+"    tn, fp, fn, tp = confusion_matrix(y_true, y_pred).ravel()  # ordre sklearn : TN FP FN TP\n"
+"    return fn_cost * fn + fp_cost * fp, int(fn), int(fp)\n"
+"\n"
+"\n"
+"def find_best_threshold(y_true, y_proba, thresholds=None):\n"
+"    \"\"\"Cherche le seuil de decision qui minimise le cout metier.\n"
+"\n"
+"    Parcourt les seuils de 0.01 a 0.98 par pas de 0.01.\n"
+"    Retourne (seuil_optimal: float, cout_minimal: int).\n"
+"    \"\"\"\n"
+"    if thresholds is None:\n"
+"        thresholds = np.arange(0.01, 0.99, 0.01)\n"
+"    best_t, best_c = 0.5, float('inf')  # valeurs initiales : seuil neutre, cout infini\n"
+"    for t in thresholds:\n"
+"        c, _, _ = compute_business_cost(y_true, (y_proba >= t).astype(int))\n"
+"        if c < best_c:  # mise a jour si ce seuil donne un cout plus faible\n"
+"            best_c, best_t = c, t\n"
+"    return round(float(best_t), 2), int(best_c)\n"
+"\n"
+"\n"
+"def compute_all_metrics(name, y_true, y_proba, fold_aucs):\n"
+"    \"\"\"Consolide toutes les metriques a partir des predictions OOF.\n"
+"\n"
+"    Calcule AUC, PR-AUC, Recall, Precision, F1 et cout metier au seuil optimal.\n"
+"    Retourne un dict directement utilisable dans pd.DataFrame.\n"
+"    \"\"\"\n"
+"    thresh, cost = find_best_threshold(y_true, y_proba)      # seuil qui minimise le cout metier\n"
+"    y_pred = (y_proba >= thresh).astype(int)                  # binarisation au seuil optimal\n"
+"    _, fn, fp = compute_business_cost(y_true, y_pred)         # recalcul pour isoler FN et FP\n"
+"    return {\n"
+"        'Modele':      name,\n"
+"        'AUC moy':     round(float(np.mean(fold_aucs)), 4),\n"
+"        'AUC std':     round(float(np.std(fold_aucs)),  4),\n"
+"        'PR-AUC':      round(float(average_precision_score(y_true, y_proba)), 4),\n"
+"        'Recall':      round(float(recall_score(y_true, y_pred)),   4),\n"
+"        'Precision':   round(float(precision_score(y_true, y_pred, zero_division=0)), 4),\n"
+"        'F1':          round(float(f1_score(y_true, y_pred)),       4),\n"
+"        'Seuil':       thresh,\n"
+"        'Cout metier': cost,\n"
+"        'FN':          fn,\n"
+"        'FP':          fp,\n"
+"    }\n"
+"\n"
+"print('Metriques chargees.')\n"
+))
+
+# Helpers visualisation
+cells.append(code(
+"def plot_roc_curves(models_probas, y_true, title='Courbes ROC'):\n"
+"    \"\"\"Trace les courbes ROC de plusieurs modeles sur le meme graphique.\n"
+"\n"
+"    models_probas : dict {nom_modele: array de probabilites de la classe positive}\n"
+"    \"\"\"\n"
+"    plt.figure(figsize=(8, 6))\n"
+"    for name, proba in models_probas.items():\n"
+"        fpr, tpr, _ = roc_curve(y_true, proba)  # taux de faux positifs et vrais positifs\n"
+"        auc = roc_auc_score(y_true, proba)\n"
+"        plt.plot(fpr, tpr, label=f'{name}  (AUC = {auc:.4f})')\n"
+"    plt.plot([0, 1], [0, 1], '--', color='gray', label='Aleatoire (AUC = 0.5)')  # diagonale : classifieur aleatoire\n"
+"    plt.xlabel('Taux Faux Positifs (FPR)')\n"
+"    plt.ylabel('Taux Vrais Positifs (TPR)')\n"
+"    plt.title(title)\n"
+"    plt.legend(fontsize=9)\n"
+"    plt.grid(True)\n"
+"    plt.tight_layout()\n"
+"    plt.show()\n"
+"\n"
+"\n"
+"def plot_threshold_curve(y_true, y_proba, model_name=''):\n"
+"    \"\"\"Trace le cout metier en fonction du seuil de decision.\n"
+"\n"
+"    Marque le seuil optimal (minimum du cout) d'une ligne verticale rouge.\n"
+"    \"\"\"\n"
+"    thresholds = np.arange(0.01, 0.99, 0.01)\n"
+"    costs = [\n"
+"        compute_business_cost(y_true, (y_proba >= t).astype(int))[0]  # cout pour chaque seuil\n"
+"        for t in thresholds\n"
+"    ]\n"
+"    best_t, best_c = find_best_threshold(y_true, y_proba)  # seuil optimal sur cette courbe\n"
+"    plt.figure(figsize=(9, 5))\n"
+"    plt.plot(thresholds, costs, linewidth=2)\n"
+"    plt.axvline(\n"
+"        best_t, linestyle='--', color='red',\n"
+"        label=f'Seuil optimal = {best_t:.2f}  ->  cout = {best_c:,}'\n"
+"    )\n"
+"    plt.xlabel('Seuil de decision')\n"
+"    plt.ylabel('Cout metier  (10 x FN + FP)')\n"
+"    plt.title(f'Cout metier vs Seuil - {model_name}')\n"
+"    plt.legend()\n"
+"    plt.grid(True)\n"
+"    plt.tight_layout()\n"
+"    plt.show()\n"
+"\n"
+"\n"
+"def display_results(df, title=''):\n"
+"    \"\"\"Affiche le tableau de metriques avec mise en forme coloree.\n"
+"\n"
+"    Met en vert les meilleures valeurs (AUC, Recall, F1)\n"
+"    et les couts les plus bas (Cout metier, FN, FP).\n"
+"    \"\"\"\n"
+"    if title:\n"
+"        print(f\"{'='*60}\\n  {title}\\n{'='*60}\")\n"
+"    styled = (\n"
+"        df.style\n"
+"        .highlight_max(subset=['AUC moy', 'PR-AUC', 'Recall', 'F1'], color='#c6efce')  # vert : valeurs les plus hautes\n"
+"        .highlight_min(subset=['Cout metier', 'FN', 'FP'], color='#c6efce')             # vert : valeurs les plus basses\n"
+"        .format({\n"
+"            'AUC moy':   '{:.4f}',\n"
+"            'AUC std':   '{:.4f}',\n"
+"            'PR-AUC':    '{:.4f}',\n"
+"            'Recall':    '{:.4f}',\n"
+"            'Precision': '{:.4f}',\n"
+"            'F1':        '{:.4f}',\n"
+"        })\n"
+"    )\n"
+"    display(styled)\n"
+"\n"
+"print('Visualisation chargee.')\n"
+))
+
+# CV functions
+cells.append(md("## 3. Fonctions de validation croisee"))
+cells.append(code(
+"def cv_sklearn(name, make_model, X, y, needs_scaling=False, verbose=True):\n"
+"    \"\"\"Validation croisee StratifiedKFold pour les modeles scikit-learn.\n"
+"\n"
+"    make_model  : callable sans argument retournant un estimateur frais a chaque fold.\n"
+"    needs_scaling : si True, applique SimpleImputer + StandardScaler dans chaque fold\n"
+"                    (fit uniquement sur les donnees d'entrainement du fold).\n"
+"    Retourne (metriques: dict, oof_proba: np.ndarray).\n"
+"    \"\"\"\n"
+"    skf  = StratifiedKFold(n_splits=N_FOLDS, shuffle=True, random_state=RANDOM_STATE)\n"
+"    oof  = np.zeros(len(y))  # contiendra les probabilites predites sur les folds de validation\n"
+"    aucs = []                # AUC de chaque fold, pour calculer moyenne et ecart-type\n"
+"\n"
+"    for fold, (tr, val) in enumerate(skf.split(X, y), 1):\n"
+"        X_tr, X_val = X.values[tr], X.values[val]\n"
+"        y_tr, y_val = y.values[tr], y.values[val]\n"
+"\n"
+"        if needs_scaling:\n"
+"            # Imputation et standardisation fitees sur X_tr uniquement — evite la fuite de donnees\n"
+"            imp   = SimpleImputer(strategy='median')\n"
+"            X_tr  = imp.fit_transform(X_tr)\n"
+"            X_val = imp.transform(X_val)\n"
+"            sc    = StandardScaler()\n"
+"            X_tr  = sc.fit_transform(X_tr)\n"
+"            X_val = sc.transform(X_val)\n"
+"\n"
+"        model = make_model()  # nouvel estimateur a chaque fold pour eviter toute fuite\n"
+"        model.fit(X_tr, y_tr)\n"
+"        oof[val] = model.predict_proba(X_val)[:, 1]  # probabilite classe positive (defaut)\n"
+"\n"
+"        auc = roc_auc_score(y_val, oof[val])\n"
+"        aucs.append(auc)\n"
+"        if verbose:\n"
+"            print(f'  Fold {fold}/{N_FOLDS}  AUC = {auc:.4f}')\n"
+"\n"
+"    metrics = compute_all_metrics(name, y, oof, aucs)\n"
+"    print(f\"  -> OOF AUC = {metrics['AUC moy']:.4f} +/- {metrics['AUC std']:.4f}\")\n"
+"    return metrics, oof\n"
+"\n"
+"\n"
+"def cv_lgbm(name, params, X, y, verbose=True):\n"
+"    \"\"\"Validation croisee StratifiedKFold pour LightGBM avec early stopping.\n"
+"\n"
+"    L'early stopping arrete l'entrainement apres 100 rounds sans amelioration\n"
+"    de l'AUC sur le fold de validation, evitant le sur-apprentissage.\n"
+"    Retourne (metriques: dict, oof_proba: np.ndarray).\n"
+"    \"\"\"\n"
+"    skf  = StratifiedKFold(n_splits=N_FOLDS, shuffle=True, random_state=RANDOM_STATE)\n"
+"    oof  = np.zeros(len(y))\n"
+"    aucs = []\n"
+"\n"
+"    for fold, (tr, val) in enumerate(skf.split(X, y), 1):\n"
+"        X_tr, X_val = X.iloc[tr], X.iloc[val]\n"
+"        y_tr, y_val = y.iloc[tr], y.iloc[val]\n"
+"\n"
+"        model = LGBMClassifier(**params)\n"
+"        model.fit(\n"
+"            X_tr, y_tr,\n"
+"            eval_set=[(X_val, y_val)],  # jeu de validation pour surveiller la convergence\n"
+"            eval_metric='auc',\n"
+"            callbacks=[\n"
+"                lgb.early_stopping(stopping_rounds=100, verbose=False),  # arrete si pas de progres sur 100 rounds\n"
+"                lgb.log_evaluation(period=-1),  # desactive les logs LightGBM internes\n"
+"            ],\n"
+"        )\n"
+"        oof[val] = model.predict_proba(X_val)[:, 1]  # probabilite classe positive (defaut)\n"
+"        auc      = roc_auc_score(y_val, oof[val])\n"
+"        aucs.append(auc)\n"
+"        if verbose:\n"
+"            print(f'  Fold {fold}/{N_FOLDS}  AUC = {auc:.4f}  '\n"
+"                  f'(meilleure iteration = {model.best_iteration_})')\n"
+"\n"
+"    metrics = compute_all_metrics(name, y, oof, aucs)\n"
+"    print(f\"  -> OOF AUC = {metrics['AUC moy']:.4f} +/- {metrics['AUC std']:.4f}\")\n"
+"    return metrics, oof\n"
+"\n"
+"print('Fonctions CV chargees.')\n"
+))
+
+# ETAPE 3
+cells.append(md(
+    "---\n"
+    "## Etape 3 - Comparaison des modeles\n\n"
+    "Chaque modele est evalue en **StratifiedKFold** (`N_FOLDS` folds). "
+    "Metriques calculees sur les predictions OOF au seuil optimal."
+))
+
+cells.append(md("### Modele 1 : Dummy Classifier"))
+cells.append(code(
+"# Modele de reference — predit toujours la proportion des classes (strategy='prior')\n"
+"print('=== Dummy Classifier ===')\n"
+"dummy_metrics, dummy_proba = cv_sklearn(\n"
+"    'Dummy',\n"
+"    lambda: DummyClassifier(strategy='prior', random_state=RANDOM_STATE),\n"
+"    X_train, y_train,\n"
+")\n"
+))
+
+cells.append(md("### Modele 2 : Logistic Regression"))
+cells.append(code(
+"# needs_scaling=True : la regression logistique est sensible a l'echelle des variables\n"
+"# C=0.1 : regularisation L2 moderee  |  class_weight='balanced' : compense le desequilibre\n"
+"print('=== Logistic Regression ===')\n"
+"logreg_metrics, logreg_proba = cv_sklearn(\n"
+"    'Logistic Regression',\n"
+"    lambda: LogisticRegression(\n"
+"        C=0.1,\n"
+"        penalty='l2',\n"
+"        solver='lbfgs',\n"
+"        max_iter=1000,\n"
+"        class_weight='balanced',\n"
+"        random_state=RANDOM_STATE,\n"
+"        n_jobs=-1,\n"
+"    ),\n"
+"    X_train, y_train,\n"
+"    needs_scaling=True,\n"
+")\n"
+))
+
+cells.append(md("### Modele 3 : LightGBM"))
+cells.append(code(
+"# LightGBM — gere nativement les NaN, pas besoin de scaling\n"
+"# device=LGB_DEVICE : GPU si disponible (defini dans config.py)\n"
+"LGBM_BASE_PARAMS = {\n"
+"    'n_estimators':      1000,\n"
+"    'learning_rate':     0.05,\n"
+"    'num_leaves':        31,\n"
+"    'max_depth':         -1,     # Illimite, controle par num_leaves\n"
+"    'min_child_samples': 20,\n"
+"    'subsample':         0.8,\n"
+"    'colsample_bytree':  0.8,\n"
+"    'reg_alpha':         0.0,\n"
+"    'reg_lambda':        0.0,\n"
+"    'objective':         'binary',\n"
+"    'class_weight':      'balanced',\n"
+"    'random_state':      RANDOM_STATE,\n"
+"    'n_jobs':            -1,\n"
+"    'verbosity':         -1,\n"
+"    'device':            LGB_DEVICE,\n"
+"}\n"
+"\n"
+"print('=== LightGBM baseline ===')\n"
+"lgbm_metrics, lgbm_proba = cv_lgbm('LightGBM baseline', LGBM_BASE_PARAMS, X_train, y_train)\n"
+))
+
+cells.append(md("### Resultats Etape 3"))
+cells.append(code(
+"results_step3 = pd.DataFrame(\n"
+"    [dummy_metrics, logreg_metrics, lgbm_metrics]\n"
+").set_index('Modele')\n"
+"\n"
+"display_results(results_step3, 'Etape 3 - Comparaison des modeles')\n"
+"\n"
+"plot_roc_curves(\n"
+"    {\n"
+"        'Dummy':               dummy_proba,\n"
+"        'Logistic Regression': logreg_proba,\n"
+"        'LightGBM baseline':   lgbm_proba,\n"
+"    },\n"
+"    y_train, title='Etape 3 - Courbes ROC (OOF sur X_train)',\n"
+")\n"
+))
+
+# ETAPE 4
+cells.append(md(
+    "---\n"
+    "## Etape 4 - Optimisation des hyperparametres\n\n"
+    "- **Logistic Regression** -> `GridSearchCV` sur 20% du dataset\n"
+    "- **LightGBM** -> `RandomizedSearchCV` (30 combinaisons) "
+    "puis `GridSearchCV` (fine-tuning)"
+))
+
+cells.append(md("### 4.1 Logistic Regression - GridSearchCV"))
+cells.append(code(
+"# Recherche sur 20% de X_train pour limiter le temps de calcul\n"
+"X_srch, _, y_srch, _ = train_test_split(\n"
+"    X_train, y_train, train_size=0.2, stratify=y_train, random_state=RANDOM_STATE\n"
+")\n"
+"print(f'Taille du sous-echantillon : {X_srch.shape}')\n"
+"\n"
+"# Pipeline : garantit que le pre-traitement est applique dans chaque fold de la CV\n"
+"lr_pipeline = Pipeline([\n"
+"    ('imputer', SimpleImputer(strategy='median')),\n"
+"    ('scaler',  StandardScaler()),\n"
+"    ('lr',      LogisticRegression(\n"
+"        max_iter=1000, class_weight='balanced',\n"
+"        random_state=RANDOM_STATE, n_jobs=-1,\n"
+"    )),\n"
+"])\n"
+"\n"
+"# Prefixe 'lr__' requis pour cibler les parametres de l'etape 'lr' du Pipeline\n"
+"param_grid_lr = {\n"
+"    'lr__C':       [0.001, 0.01, 0.1, 1, 10],\n"
+"    'lr__penalty': ['l1', 'l2'],\n"
+"    'lr__solver':  ['liblinear'],  # Seul solver supportant l1 et l2\n"
+"}\n"
+"\n"
+"skf = StratifiedKFold(n_splits=N_FOLDS, shuffle=True, random_state=RANDOM_STATE)\n"
+"\n"
+"gs_lr = GridSearchCV(\n"
+"    lr_pipeline, param_grid_lr,\n"
+"    cv=skf,\n"
+"    scoring='roc_auc',\n"
+"    n_jobs=1,    # sequentiel : chaque fit s'affiche en temps reel\n"
+"    verbose=2,   # affiche score + duree pour chaque fit\n"
+")\n"
+"gs_lr.fit(X_srch, y_srch)\n"
+"\n"
+"print(f'\\nMeilleurs params : {gs_lr.best_params_}')\n"
+"print(f'Meilleur AUC CV  : {gs_lr.best_score_:.4f}')\n"
+"\n"
+"# Suppression du prefixe 'lr__' pour utiliser les params directement\n"
+"best_lr_params = {k.replace('lr__', ''): v for k, v in gs_lr.best_params_.items()}\n"
+"print(f'Params nets      : {best_lr_params}')\n"
+))
+
+cells.append(md("### 4.2 LightGBM - RandomizedSearchCV (exploration large)"))
+cells.append(code(
+"# n_estimators reduit (300-800) car pas d'early stopping dans RandomizedSearch\n"
+"# La CV finale avec early stopping determinera le nombre optimal d'arbres\n"
+"lgb_param_dist = {\n"
+"    'n_estimators':      [300, 500, 800],\n"
+"    'learning_rate':     [0.01, 0.03, 0.05, 0.07, 0.1],\n"
+"    'num_leaves':        [15, 31, 63, 127],\n"
+"    'max_depth':         [-1, 4, 6, 8, 10],\n"
+"    'min_child_samples': [20, 50, 100, 200],\n"
+"    'subsample':         [0.6, 0.8, 1.0],\n"
+"    'colsample_bytree':  [0.6, 0.8, 1.0],\n"
+"    'reg_alpha':         [0, 0.01, 0.1, 1.0],\n"
+"    'reg_lambda':        [0, 0.01, 0.1, 1.0],\n"
+"    'class_weight':      ['balanced'],\n"
+"}\n"
+"\n"
+"lgb_for_search = LGBMClassifier(\n"
+"    objective='binary',\n"
+"    random_state=RANDOM_STATE,\n"
+"    n_jobs=1,   # GPU gere la parallelisation — n_jobs=-1 surchargerait le CPU inutilement\n"
+"    verbosity=-1,\n"
+"    device=LGB_DEVICE,\n"
+")\n"
+"\n"
+"random_lgb = RandomizedSearchCV(\n"
+"    lgb_for_search, lgb_param_dist,\n"
+"    n_iter=30,\n"
+"    cv=skf,\n"
+"    scoring='roc_auc',\n"
+"    random_state=RANDOM_STATE,\n"
+"    n_jobs=1,   # LightGBM parallelise deja en interne\n"
+"    verbose=1,\n"
+")\n"
+"random_lgb.fit(X_train, y_train)\n"
+"\n"
+"print(f'\\nMeilleur AUC RandomizedSearch : {random_lgb.best_score_:.4f}')\n"
+"print(f'Meilleurs params              : {random_lgb.best_params_}')\n"
+))
+
+cells.append(md("### 4.3 LightGBM - GridSearchCV (fine-tuning)"))
+cells.append(code(
+"# Exploration locale autour du meilleur resultat : valeur / 2, valeur, valeur x 2\n"
+"best_rnd = random_lgb.best_params_\n"
+"\n"
+"grid_lgb_params = {\n"
+"    'n_estimators':  [best_rnd['n_estimators']],\n"
+"    'learning_rate': [best_rnd['learning_rate']],\n"
+"    'num_leaves': [\n"
+"        max(4,   best_rnd['num_leaves'] // 2),\n"
+"        best_rnd['num_leaves'],\n"
+"        min(255, best_rnd['num_leaves'] * 2),\n"
+"    ],\n"
+"    'max_depth': [best_rnd['max_depth']],\n"
+"    'min_child_samples': [\n"
+"        max(10, best_rnd['min_child_samples'] // 2),\n"
+"        best_rnd['min_child_samples'],\n"
+"        best_rnd['min_child_samples'] * 2,\n"
+"    ],\n"
+"    'subsample':        [best_rnd['subsample']],\n"
+"    'colsample_bytree': [best_rnd['colsample_bytree']],\n"
+"    'reg_alpha':        [best_rnd['reg_alpha']],\n"
+"    'reg_lambda':       [best_rnd['reg_lambda']],\n"
+"    'class_weight':     ['balanced'],\n"
+"}\n"
+"\n"
+"grid_lgb = GridSearchCV(\n"
+"    lgb_for_search, grid_lgb_params,\n"
+"    cv=skf, scoring='roc_auc',\n"
+"    n_jobs=1, verbose=1,\n"
+")\n"
+"grid_lgb.fit(X_train, y_train)\n"
+"\n"
+"print(f'\\nMeilleur AUC GridSearch : {grid_lgb.best_score_:.4f}')\n"
+"print(f'Meilleurs params        : {grid_lgb.best_params_}')\n"
+"\n"
+"# n_estimators remis a 1000 : l'early stopping le limitera en CV finale\n"
+"LGBM_BEST_PARAMS = {\n"
+"    **grid_lgb.best_params_,\n"
+"    'objective':    'binary',\n"
+"    'random_state': RANDOM_STATE,\n"
+"    'n_jobs':       -1,\n"
+"    'verbosity':    -1,\n"
+"    'device':       LGB_DEVICE,\n"
+"    'n_estimators': 1000,\n"
+"}\n"
+"print(f'\\nParametres finaux LightGBM : {LGBM_BEST_PARAMS}')\n"
+))
+
+cells.append(md("### 4.4 CV finale avec les meilleurs hyperparametres"))
+cells.append(code(
+"print('=== Logistic Regression optimisee ===')\n"
+"logreg_opt_metrics, logreg_opt_proba = cv_sklearn(\n"
+"    'LR optimisee',\n"
+"    lambda: LogisticRegression(\n"
+"        **best_lr_params,\n"
+"        max_iter=1000,\n"
+"        class_weight='balanced',\n"
+"        random_state=RANDOM_STATE,\n"
+"        n_jobs=-1,\n"
+"    ),\n"
+"    X_train, y_train, needs_scaling=True,\n"
+")\n"
+"\n"
+"print('\\n=== LightGBM optimise ===')\n"
+"lgbm_opt_metrics, lgbm_opt_proba = cv_lgbm(\n"
+"    'LightGBM optimise', LGBM_BEST_PARAMS, X_train, y_train\n"
+")\n"
+))
+
+cells.append(md(
+    "### 4.5 Evaluation sur le jeu de test\n\n"
+    "Les modeles sont d'abord entraines sur `X_train` pour evaluer les performances "
+    "sur `X_test` (donnees jamais vues), puis reentraines sur tout `X` pour la production."
+))
+cells.append(code(
+"from sklearn.metrics import roc_auc_score\n"
+"\n"
+"# LR — evaluation sur X_test\n"
+"final_lr = Pipeline([\n"
+"    ('imputer', SimpleImputer(strategy='median')),\n"
+"    ('scaler',  StandardScaler()),\n"
+"    ('lr',      LogisticRegression(\n"
+"        **best_lr_params, max_iter=1000,\n"
+"        class_weight='balanced',\n"
+"        random_state=RANDOM_STATE, n_jobs=-1,\n"
+"    )),\n"
+"])\n"
+"final_lr.fit(X_train, y_train)\n"
+"lr_test_proba = final_lr.predict_proba(X_test)[:, 1]\n"
+"auc_test_lr   = roc_auc_score(y_test, lr_test_proba)\n"
+"gap_lr        = round(logreg_opt_metrics['AUC moy'] - auc_test_lr, 4)\n"
+"\n"
+"# LightGBM — evaluation sur X_test\n"
+"final_lgbm = LGBMClassifier(**LGBM_BEST_PARAMS)\n"
+"final_lgbm.fit(X_train, y_train)\n"
+"lgbm_test_proba = final_lgbm.predict_proba(X_test)[:, 1]\n"
+"auc_test_lgbm   = roc_auc_score(y_test, lgbm_test_proba)\n"
+"gap_lgbm        = round(lgbm_opt_metrics['AUC moy'] - auc_test_lgbm, 4)\n"
+"\n"
+"print('=' * 55)\n"
+"print('  Comparaison OOF (train) vs Test')\n"
+"print('=' * 55)\n"
+"print(f'LR    — OOF : {logreg_opt_metrics[\"AUC moy\"]:.4f}  |  Test : {auc_test_lr:.4f}  |  Gap : {gap_lr:.4f}')\n"
+"print(f'LGBM  — OOF : {lgbm_opt_metrics[\"AUC moy\"]:.4f}  |  Test : {auc_test_lgbm:.4f}  |  Gap : {gap_lgbm:.4f}')\n"
+"\n"
+"# Reentretainement sur tout le dataset pour la production\n"
+"final_lr.fit(X, y)\n"
+"final_lgbm.fit(X, y)\n"
+"print('\\nModeles reentraines sur X complet pour la production.')\n"
+))
+
+cells.append(md("### 4.6 Courbes cout metier vs seuil"))
+cells.append(code(
+"# Visualisation du compromis FN / FP en fonction du seuil — predictions OOF sur X_train\n"
+"plot_threshold_curve(y_train, logreg_opt_proba, 'Logistic Regression optimisee')\n"
+"plot_threshold_curve(y_train, lgbm_opt_proba,   'LightGBM optimise')\n"
+))
+
+cells.append(md("### Resultats finaux - Etapes 3 & 4"))
+cells.append(code(
+"all_results = pd.DataFrame([\n"
+"    dummy_metrics,\n"
+"    logreg_metrics,\n"
+"    logreg_opt_metrics,\n"
+"    lgbm_metrics,\n"
+"    lgbm_opt_metrics,\n"
+"]).set_index('Modele')\n"
+"\n"
+"display_results(all_results, 'Resultats finaux - tous les modeles')\n"
+"\n"
+"plot_roc_curves(\n"
+"    {\n"
+"        'Dummy':              dummy_proba,\n"
+"        'LR baseline':        logreg_proba,\n"
+"        'LR optimisee':       logreg_opt_proba,\n"
+"        'LightGBM baseline':  lgbm_proba,\n"
+"        'LightGBM optimise':  lgbm_opt_proba,\n"
+"    },\n"
+"    y_train, title='Etapes 3 & 4 - Courbes ROC (OOF sur X_train)',\n"
+")\n"
+))
+
+# Assemblage du notebook
+nb = {
+    "cells": cells,
+    "metadata": {
+        "kernelspec": {
+            "display_name": "Python 3",
+            "language": "python",
+            "name": "python3"
+        },
+        "language_info": {"name": "python", "version": "3.11.0"}
+    },
+    "nbformat": 4,
+    "nbformat_minor": 5,
+}
+
+with open(_ROOT / "notebooks" / "modeling_local.ipynb", "w", encoding="utf-8") as f:
+    json.dump(nb, f, ensure_ascii=False, indent=1)
+
+print(f"Cree : notebooks/modeling_local.ipynb  ({len(cells)} cellules)")

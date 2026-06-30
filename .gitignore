@@ -1,0 +1,39 @@
+# ── Données ───────────────────────────────────────────────────────────────────
+data/*
+!data/.gitkeep
+!data/README_data.md
+!data/processed/
+data/processed/*.csv
+
+# ── Environnement Python ───────────────────────────────────────────────────────
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.env
+
+# ── MLflow ─────────────────────────────────────────────────────────────────────
+mlflow.db
+*.db
+mlruns/
+notebooks/mlruns/
+
+# ── Modèles entraînés (binaires, régénérables) ────────────────────────────────
+#models/*.pkl
+models/*.cbm
+models/*.json
+
+# ── Rapports générés ──────────────────────────────────────────────────────────
+reports/figures/
+reports/*.pptx
+
+# ── Claude Code (mémoire de session) ─────────────────────────────────────────
+.claude/
+
+# ── Fichiers temporaires Office ───────────────────────────────────────────────
+~$*
+
+# ── Formats de données volumineuses ──────────────────────────────────────────
+*.csv
+*.xlsx
+*.parquet
