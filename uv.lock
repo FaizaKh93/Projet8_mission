@@ -1939,8 +1939,6 @@ dependencies = [
     { name = "seaborn" },
     { name = "shap", version = "0.50.0", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine == 'x86_64' and sys_platform == 'darwin'" },
     { name = "shap", version = "0.51.0", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine != 'x86_64' or sys_platform != 'darwin'" },
-    { name = "torch" },
-    { name = "torchvision" },
     { name = "uvicorn", extra = ["standard"] },
     { name = "xgboost" },
 ]
@@ -1949,6 +1947,10 @@ dependencies = [
 dev = [
     { name = "httpx" },
     { name = "pytest" },
+]
+gpu = [
+    { name = "torch" },
+    { name = "torchvision" },
 ]
 
 [package.metadata]
@@ -1965,8 +1967,6 @@ requires-dist = [
     { name = "scikit-learn", specifier = ">=1.8.0" },
     { name = "seaborn", specifier = ">=0.13.2" },
     { name = "shap", specifier = ">=0.45" },
-    { name = "torch", specifier = "==2.4.1+cu118", index = "https://download.pytorch.org/whl/cu118" },
-    { name = "torchvision", specifier = "==0.19.1+cu118", index = "https://download.pytorch.org/whl/cu118" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.30.0" },
     { name = "xgboost", specifier = ">=2.0.0" },
 ]
@@ -1975,6 +1975,10 @@ requires-dist = [
 dev = [
     { name = "httpx", specifier = ">=0.27" },
     { name = "pytest", specifier = ">=8.0" },
+]
+gpu = [
+    { name = "torch", specifier = "==2.4.1+cu118", index = "https://download.pytorch.org/whl/cu118" },
+    { name = "torchvision", specifier = "==0.19.1+cu118", index = "https://download.pytorch.org/whl/cu118" },
 ]
 
 [[package]]
