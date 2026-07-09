@@ -2,17 +2,22 @@
 Chargement unique du modèle LightGBM, du dataset et de l'explainer SHAP au démarrage.
 Réutilisation en mémoire à chaque requête — pas de rechargement à la volée.
 """
+import os
 import re
-import joblib
 import numpy as np
 import pandas as pd
 import shap
+import mlflow.lightgbm
 from pathlib import Path
 
-# Chemins résolus depuis l'emplacement de ce fichier (api/model.py → racine du projet)
+# Chemin résolu depuis l'emplacement de ce fichier (api/model.py → racine du projet)
 _ROOT         = Path(__file__).resolve().parent.parent
-_MODEL_PATH   = _ROOT / "models" / "lgbm_optimized.pkl"
 _DATASET_PATH = _ROOT / "data" / "processed" / "train_processed_global.csv"
+
+# URI du modèle dans MLflow Registry — chargé via l'alias "champion"
+# En local : MLFLOW_TRACKING_URI pointe vers ./mlruns (défaut)
+# En Docker : variable d'environnement MLFLOW_TRACKING_URI à définir
+_MODEL_URI = "models:/LightGBM_credit_scoring@champion"
 
 # Seuil de décision métier optimisé : minimise la fonction de coût 10×FN + FP
 THRESHOLD = 0.46
@@ -72,7 +77,11 @@ def load_artifacts():
     """
     global _model, _dataset, _explainer
 
-    _model     = joblib.load(_MODEL_PATH)
+    # MLFLOW_TRACKING_URI : variable d'environnement pour Docker/CI
+    # Défaut local : dossier mlruns/ à la racine du projet
+    # Path.as_uri() produit file:///C:/... sur Windows — requis par MLflow
+    mlflow.set_tracking_uri(os.getenv("MLFLOW_TRACKING_URI", (_ROOT / "mlruns").as_uri()))
+    _model     = mlflow.lightgbm.load_model(_MODEL_URI)
     df         = pd.read_csv(_DATASET_PATH)
     df         = _clean_column_names(df)
     _dataset   = df.set_index("SK_ID_CURR")

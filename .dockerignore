@@ -1,0 +1,45 @@
+# ── Contrôle de version ───────────────────────────────────────────────────────
+.git/
+.gitignore
+
+# ── Environnement Python local ────────────────────────────────────────────────
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# ── Données volumineuses — montées en volume au runtime ───────────────────────
+data/
+mlruns/
+mlflow.db
+*.db
+
+# ── Modèles locaux — chargés depuis MLflow Registry au démarrage ──────────────
+models/
+
+# ── Tests — non nécessaires dans l'image de production ───────────────────────
+tests/
+
+# ── Notebooks, rapports, scripts de traitement ───────────────────────────────
+notebooks/
+reports/
+src/
+scripts/
+logs/
+
+# ── Documentation ─────────────────────────────────────────────────────────────
+README.md
+*.md
+
+# ── Formats de données ────────────────────────────────────────────────────────
+*.csv
+*.xlsx
+*.parquet
+
+# ── Fichiers sensibles ────────────────────────────────────────────────────────
+.env
+.env.*
+
+# ── Outils de développement ───────────────────────────────────────────────────
+.claude/

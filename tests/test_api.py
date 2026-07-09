@@ -124,9 +124,10 @@ def test_predict_not_found(mock_model, mock_explainer, mock_features):
     def fake_lookup(cid):
         return mock_features if cid == 100002 else None
 
-    with patch("api.model.get_client_features", side_effect=fake_lookup):
-        with TestClient(app) as c:
-            r = c.post("/predict", json={"client_ids": [100002, 999999]})
+    with patch("api.model.load_artifacts"):
+        with patch("api.model.get_client_features", side_effect=fake_lookup):
+            with TestClient(app) as c:
+                r = c.post("/predict", json={"client_ids": [100002, 999999]})
     app.dependency_overrides.clear()
 
     data = r.json()
@@ -146,9 +147,10 @@ def test_predict_refused(mock_model, mock_explainer, mock_features):
     mock_model.predict_proba.return_value = np.array([[0.35, 0.65]])
     app.dependency_overrides[get_model]    = lambda: mock_model
     app.dependency_overrides[get_explainer] = lambda: mock_explainer
-    with patch("api.model.get_client_features", return_value=mock_features):
-        with TestClient(app) as c:
-            r = c.post("/predict", json={"client_ids": 100002})
+    with patch("api.model.load_artifacts"):
+        with patch("api.model.get_client_features", return_value=mock_features):
+            with TestClient(app) as c:
+                r = c.post("/predict", json={"client_ids": 100002})
     app.dependency_overrides.clear()
     assert r.json()["predictions"][0]["decision"] == "refusé"
 
@@ -158,9 +160,10 @@ def test_predict_approved(mock_model, mock_explainer, mock_features):
     mock_model.predict_proba.return_value = np.array([[0.85, 0.15]])
     app.dependency_overrides[get_model]    = lambda: mock_model
     app.dependency_overrides[get_explainer] = lambda: mock_explainer
-    with patch("api.model.get_client_features", return_value=mock_features):
-        with TestClient(app) as c:
-            r = c.post("/predict", json={"client_ids": 100002})
+    with patch("api.model.load_artifacts"):
+        with patch("api.model.get_client_features", return_value=mock_features):
+            with TestClient(app) as c:
+                r = c.post("/predict", json={"client_ids": 100002})
     app.dependency_overrides.clear()
     assert r.json()["predictions"][0]["decision"] == "accordé"
 
@@ -242,9 +245,10 @@ def test_explain_not_found(mock_model, mock_explainer):
     """Client absent du dataset → code 404."""
     app.dependency_overrides[get_model]    = lambda: mock_model
     app.dependency_overrides[get_explainer] = lambda: mock_explainer
-    with patch("api.model.get_client_features", return_value=None):
-        with TestClient(app) as c:
-            r = c.get("/predict/999999/explain")
+    with patch("api.model.load_artifacts"):
+        with patch("api.model.get_client_features", return_value=None):
+            with TestClient(app) as c:
+                r = c.get("/predict/999999/explain")
     app.dependency_overrides.clear()
     assert r.status_code == 404
 
