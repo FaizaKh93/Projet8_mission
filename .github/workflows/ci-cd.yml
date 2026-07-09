@@ -1,0 +1,69 @@
+name: CI/CD
+
+on:
+  push:
+    branches: ["**"]        # tests sur toutes les branches
+  pull_request:
+    branches: [main]        # tests sur chaque PR vers main
+
+jobs:
+  # ── Job 1 : Tests ───────────────────────────────────────────────────────────
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-caching: true    # cache du virtualenv entre les runs → rebuild rapide
+
+      - name: Install dependencies (no GPU group)
+        # --no-group gpu : exclut torch+CUDA — inutile pour les tests
+        run: uv sync --no-group gpu
+
+      - name: Run tests
+        run: uv run pytest tests/ -v
+
+  # ── Job 2 : Build & Push image Docker ───────────────────────────────────────
+  build-and-push:
+    name: Build & Push Docker image
+    needs: test                   # ne s'exécute que si les tests passent
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+
+    permissions:
+      contents: read
+      packages: write             # requis pour pousser sur ghcr.io
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}   # token automatique, rien à configurer
+
+      - name: Extract Docker metadata (tags + labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          # metadata-action met automatiquement en minuscules le nom de l'image
+          images: ghcr.io/${{ github.repository_owner }}/projet8-scoring-api
+          tags: |
+            type=raw,value=latest
+            type=sha,prefix=sha-   # ex: sha-a1b2c3d — traçabilité par commit
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
