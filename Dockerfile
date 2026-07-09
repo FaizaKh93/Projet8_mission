@@ -26,25 +26,22 @@ COPY api/ ./api/
 # PATH vers le virtualenv créé par uv dans /app/.venv
 ENV PATH="/app/.venv/bin:$PATH"
 
-# MLflow : le dossier mlruns/ est monté en volume au runtime (pas embarqué dans l'image)
-# Exemple : docker run -v ./mlruns:/app/mlruns ...
-ENV MLFLOW_TRACKING_URI=file:///app/mlruns
+# MODEL_SOURCE=hf : charge le modèle et le dataset depuis HF Hub au démarrage
+# Pour le dev local avec MLflow : docker run -e MODEL_SOURCE=mlflow -v ./mlruns:/app/mlruns
+ENV MODEL_SOURCE=hf
 
 # Logs en temps réel (pas de buffering Python)
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
 
 # ── Réseau ────────────────────────────────────────────────────────────────────
-EXPOSE 8000
+# Port 7860 : standard HF Spaces Docker
+EXPOSE 7860
 
 # ── Healthcheck ───────────────────────────────────────────────────────────────
-# Utilise Python natif — pas besoin d'installer curl
-# --start-period=60s : laisse le temps à load_artifacts() de charger le modèle MLflow
-HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')" || exit 1
+# --start-period=120s : laisse le temps de télécharger le modèle et le dataset (~170MB) depuis HF Hub
+HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:7860/health')" || exit 1
 
 # ── Démarrage ─────────────────────────────────────────────────────────────────
-# Volumes à monter au runtime :
-#   -v ./mlruns:/app/mlruns                              (MLflow Registry)
-#   -v ./data/processed:/app/data/processed              (dataset CSV pour /predict)
-CMD ["uvicorn", "api.app:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "api.app:app", "--host", "0.0.0.0", "--port", "7860"]

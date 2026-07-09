@@ -1,3 +1,13 @@
+---
+title: Credit Scoring API - Prêt à Dépenser
+emoji: 💳
+colorFrom: blue
+colorTo: green
+sdk: docker
+app_port: 7860
+pinned: false
+---
+
 # Projet 6 — Scoring Crédit « Prêt à Dépenser »
 
 Modèle de scoring crédit pour prédire la probabilité de défaut de remboursement

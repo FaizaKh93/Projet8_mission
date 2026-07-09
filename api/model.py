@@ -1,9 +1,14 @@
 """
 Chargement unique du modèle LightGBM, du dataset et de l'explainer SHAP au démarrage.
 Réutilisation en mémoire à chaque requête — pas de rechargement à la volée.
+
+Variable d'environnement MODEL_SOURCE :
+    hf     → téléchargement depuis HF Hub (HF Spaces, défaut Docker)
+    mlflow → chargement depuis MLflow Registry (développement local)
 """
 import os
 import re
+import joblib
 import numpy as np
 import pandas as pd
 import shap
@@ -14,10 +19,12 @@ from pathlib import Path
 _ROOT         = Path(__file__).resolve().parent.parent
 _DATASET_PATH = _ROOT / "data" / "processed" / "train_processed_global.csv"
 
-# URI du modèle dans MLflow Registry — chargé via l'alias "champion"
-# En local : MLFLOW_TRACKING_URI pointe vers ./mlruns (défaut)
-# En Docker : variable d'environnement MLFLOW_TRACKING_URI à définir
+# URI MLflow Registry — utilisé quand MODEL_SOURCE=mlflow
 _MODEL_URI = "models:/LightGBM_credit_scoring@champion"
+
+# Repos HF Hub — utilisés quand MODEL_SOURCE=hf
+_HF_MODEL_REPO   = "Faiza93/projet8-credit-scoring"
+_HF_DATASET_REPO = "Faiza93/projet8-credit-scoring-data"
 
 # Seuil de décision métier optimisé : minimise la fonction de coût 10×FN + FP
 THRESHOLD = 0.46
@@ -77,14 +84,37 @@ def load_artifacts():
     """
     global _model, _dataset, _explainer
 
-    # MLFLOW_TRACKING_URI : variable d'environnement pour Docker/CI
-    # Défaut local : dossier mlruns/ à la racine du projet
-    # Path.as_uri() produit file:///C:/... sur Windows — requis par MLflow
-    mlflow.set_tracking_uri(os.getenv("MLFLOW_TRACKING_URI", (_ROOT / "mlruns").as_uri()))
-    _model     = mlflow.lightgbm.load_model(_MODEL_URI)
-    df         = pd.read_csv(_DATASET_PATH)
-    df         = _clean_column_names(df)
-    _dataset   = df.set_index("SK_ID_CURR")
+    model_source = os.getenv("MODEL_SOURCE", "mlflow")
+
+    if model_source == "hf":
+        # HF Spaces : téléchargement des artefacts depuis HF Hub au démarrage
+        from huggingface_hub import hf_hub_download
+        model_path = hf_hub_download(
+            repo_id=_HF_MODEL_REPO,
+            filename="lgbm_optimized.pkl",
+            repo_type="model",
+        )
+        _model = joblib.load(model_path)
+
+        dataset_path = hf_hub_download(
+            repo_id=_HF_DATASET_REPO,
+            filename="train_processed_global.parquet",
+            repo_type="dataset",
+        )
+        df       = pd.read_parquet(dataset_path)
+        df       = _clean_column_names(df)
+        _dataset = df.set_index("SK_ID_CURR")
+
+    else:
+        # Développement local : MLflow Registry + CSV local
+        # Path.as_uri() produit file:///C:/... sur Windows — requis par MLflow
+        mlflow.set_tracking_uri(os.getenv("MLFLOW_TRACKING_URI", (_ROOT / "mlruns").as_uri()))
+        _model = mlflow.lightgbm.load_model(_MODEL_URI)
+
+        if _DATASET_PATH.exists():
+            df       = pd.read_csv(_DATASET_PATH)
+            df       = _clean_column_names(df)
+            _dataset = df.set_index("SK_ID_CURR")
     _explainer = shap.TreeExplainer(_model)
 
 
