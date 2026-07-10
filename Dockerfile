@@ -44,7 +44,7 @@ ENV PYTHONDONTWRITEBYTECODE=1
 EXPOSE 7860
 
 # ── Healthcheck ───────────────────────────────────────────────────────────────
-# --start-period=120s : laisse le temps de télécharger modèle + dataset (~170MB) depuis HF Hub
+# --start-period=120s : laisse le temps de télécharger le modèle (~100MB) depuis HF Hub
 HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
     CMD python -c "import urllib.request,os; urllib.request.urlopen('http://localhost:'+os.environ.get('PORT','7860')+'/health')" || exit 1
 

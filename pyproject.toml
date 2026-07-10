@@ -20,6 +20,7 @@ dependencies = [
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.30.0",
     "huggingface-hub>=1.23.0",
+    "duckdb>=1.0.0",
 ]
 
 [dependency-groups]

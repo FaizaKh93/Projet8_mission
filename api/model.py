@@ -12,6 +12,7 @@ import joblib
 import numpy as np
 import pandas as pd
 import shap
+import duckdb
 import mlflow.lightgbm
 from pathlib import Path
 
@@ -47,9 +48,10 @@ _MODEL_METADATA = {
 }
 
 # Variables globales initialisées au démarrage par load_artifacts()
-_model     = None   # LGBMClassifier chargé depuis .pkl
-_dataset   = None   # DataFrame indexé par SK_ID_CURR pour lookup O(1)
-_explainer = None   # shap.TreeExplainer — optimisé pour les modèles à base d'arbres
+_model        = None   # LGBMClassifier chargé depuis .pkl
+_parquet_path = None   # Chemin local du Parquet (mode hf) — lu à la demande par DuckDB
+_dataset      = None   # DataFrame indexé par SK_ID_CURR (mode mlflow local uniquement)
+_explainer    = None   # shap.TreeExplainer — optimisé pour les modèles à base d'arbres
 
 # Compteurs en mémoire — remis à zéro au redémarrage de l'API
 _stats = {
@@ -74,20 +76,17 @@ def _clean_column_names(df: pd.DataFrame) -> pd.DataFrame:
 
 def load_artifacts():
     """
-    Désérialisation du modèle, chargement du dataset et initialisation de l'explainer SHAP.
+    Désérialisation du modèle, téléchargement du dataset et initialisation de l'explainer SHAP.
     Appel unique dans le lifespan de l'application FastAPI.
 
-    Ordre de chargement :
-        1. Modèle LightGBM (.pkl)
-        2. Dataset traité (CSV) — indexé par SK_ID_CURR pour lookup O(1)
-        3. TreeExplainer SHAP — initialisé à partir du modèle chargé
+    Mode hf    : modèle .pkl + Parquet sur disque (DuckDB lit à la demande, ~300MB RAM)
+    Mode mlflow: modèle MLflow Registry + CSV chargé en DataFrame (~1.5GB RAM, local uniquement)
     """
-    global _model, _dataset, _explainer
+    global _model, _parquet_path, _dataset, _explainer
 
     model_source = os.getenv("MODEL_SOURCE", "mlflow")
 
     if model_source == "hf":
-        # HF Spaces : téléchargement des artefacts depuis HF Hub au démarrage
         from huggingface_hub import hf_hub_download
         model_path = hf_hub_download(
             repo_id=_HF_MODEL_REPO,
@@ -96,14 +95,13 @@ def load_artifacts():
         )
         _model = joblib.load(model_path)
 
-        dataset_path = hf_hub_download(
+        # Parquet téléchargé sur disque (cache HF Hub) — jamais chargé en RAM
+        # DuckDB lira uniquement la ligne du client demandé à chaque requête
+        _parquet_path = hf_hub_download(
             repo_id=_HF_DATASET_REPO,
             filename="train_processed_global.parquet",
             repo_type="dataset",
         )
-        df       = pd.read_parquet(dataset_path)
-        df       = _clean_column_names(df)
-        _dataset = df.set_index("SK_ID_CURR")
 
     else:
         # Développement local : MLflow Registry + CSV local
@@ -115,6 +113,7 @@ def load_artifacts():
             df       = pd.read_csv(_DATASET_PATH)
             df       = _clean_column_names(df)
             _dataset = df.set_index("SK_ID_CURR")
+
     _explainer = shap.TreeExplainer(_model)
 
 
@@ -130,14 +129,29 @@ def get_explainer():
 
 def get_client_features(client_id: int) -> dict | None:
     """
-    Lookup des features d'un client dans le dataset en mémoire.
+    Lookup des features d'un client.
 
+    Mode hf    : requête DuckDB sur le Parquet local — une seule ligne lue sur disque.
+    Mode mlflow: lookup O(1) dans le DataFrame en mémoire.
     Retourne None si le client_id est introuvable.
-    Colonnes TARGET, SK_ID_CURR et clés de jointure exclues du résultat.
     """
-    if client_id not in _dataset.index:
-        return None
+    if _parquet_path is not None:
+        df = duckdb.execute(
+            "SELECT * FROM read_parquet(?) WHERE SK_ID_CURR = ?",
+            [_parquet_path, client_id],
+        ).fetchdf()
+        if df.empty:
+            return None
+        df  = _clean_column_names(df)
+        row = df.iloc[0]
+        return {
+            col: (None if pd.isna(val) else float(val))
+            for col, val in row.items()
+            if col not in _COLS_EXCLUDE
+        }
 
+    if _dataset is None or client_id not in _dataset.index:
+        return None
     row = _dataset.loc[client_id]
     return {
         col: (None if pd.isna(val) else float(val))
