@@ -15,9 +15,12 @@ Endpoints disponibles :
     GET  /model/info                    → métadonnées du modèle en production
     GET  /stats                         → statistiques d'usage depuis le démarrage
 """
+import json
+import time
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Depends, Query
 
+from api.logger import get_logger
 from api.schemas import (
     PredictRequest,
     PredictionResponse,
@@ -50,6 +53,8 @@ app = FastAPI(
     version="2.0.0",
     lifespan=lifespan,
 )
+
+logger = get_logger()
 
 
 # ── Dépendances injectées ─────────────────────────────────────────────────────
@@ -115,6 +120,7 @@ def predict(data: PredictRequest, model=Depends(get_model)):
     - **predictions** : liste des scores pour les clients trouvés
     - **not_found**   : liste des identifiants absents du dataset
     """
+    t0          = time.perf_counter()
     predictions = []
     not_found   = []
 
@@ -134,8 +140,20 @@ def predict(data: PredictRequest, model=Depends(get_model)):
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Prediction error client {cid}: {e}")
 
-    # Mise à jour des compteurs de monitoring après chaque appel réussi
     scoring_model.update_stats(predictions, not_found)
+
+    logger.info(json.dumps({
+        "endpoint":    "/predict",
+        "n_requested": len(data.client_ids),
+        "n_scored":    len(predictions),
+        "n_not_found": len(not_found),
+        "predictions": [
+            {"client_id": p.client_id, "score": p.score, "decision": p.decision}
+            for p in predictions
+        ],
+        "not_found":   not_found,
+        "latency_ms":  round((time.perf_counter() - t0) * 1000, 2),
+    }))
 
     return BatchResponse(predictions=predictions, not_found=not_found)
 
@@ -152,11 +170,21 @@ def predict_new(data: NewClientRequest, model=Depends(get_model)):
     - Features manquantes → NaN, gérées nativement par LightGBM
     - **client_id** optionnel : numéro de dossier assigné par l'appelant
     """
+    t0 = time.perf_counter()
     try:
-        result = scoring_model.predict(model, data.features)
+        result     = scoring_model.predict(model, data.features)
         prediction = PredictionResponse(client_id=data.client_id, **result)
-        # Mise à jour des stats — liste d'un élément pour réutiliser update_stats
         scoring_model.update_stats([prediction], [])
+
+        logger.info(json.dumps({
+            "endpoint":   "/predict/new",
+            "client_id":  data.client_id,
+            "score":      prediction.score,
+            "decision":   prediction.decision,
+            "n_features": len(data.features),
+            "latency_ms": round((time.perf_counter() - t0) * 1000, 2),
+        }))
+
         return prediction
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
