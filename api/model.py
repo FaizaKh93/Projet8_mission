@@ -147,7 +147,7 @@ def get_client_features(client_id: int) -> dict | None:
         df  = _clean_column_names(df)
         row = df.iloc[0]
         return {
-            col: (None if pd.isna(val) else float(val))
+            col: (np.nan if pd.isna(val) else float(val))
             for col, val in row.items()
             if col not in _COLS_EXCLUDE
         }
