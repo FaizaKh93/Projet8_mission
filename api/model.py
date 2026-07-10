@@ -136,9 +136,11 @@ def get_client_features(client_id: int) -> dict | None:
     Retourne None si le client_id est introuvable.
     """
     if _parquet_path is not None:
+        # f-string pour le chemin (read_parquet ne supporte pas les paramètres positionnels)
+        # client_id reste en paramètre positionnel pour éviter toute injection
         df = duckdb.execute(
-            "SELECT * FROM read_parquet(?) WHERE SK_ID_CURR = ?",
-            [_parquet_path, client_id],
+            f"SELECT * FROM read_parquet('{_parquet_path}') WHERE SK_ID_CURR = ?",
+            [int(client_id)],
         ).fetchdf()
         if df.empty:
             return None
