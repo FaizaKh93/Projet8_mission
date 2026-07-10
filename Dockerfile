@@ -2,6 +2,11 @@
 # python:3.11-slim : Debian minimal, pas d'Alpine (compatibilité binaires scipy/numpy)
 FROM python:3.11-slim
 
+# ── Dépendances système ───────────────────────────────────────────────────────
+# libgomp1 : OpenMP requis par LightGBM (absent de python:3.11-slim)
+RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
 # ── Installation de uv ────────────────────────────────────────────────────────
 # Copie du binaire uv depuis l'image officielle — plus rapide que pip install uv
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
@@ -39,9 +44,10 @@ ENV PYTHONDONTWRITEBYTECODE=1
 EXPOSE 7860
 
 # ── Healthcheck ───────────────────────────────────────────────────────────────
-# --start-period=120s : laisse le temps de télécharger le modèle et le dataset (~170MB) depuis HF Hub
+# --start-period=120s : laisse le temps de télécharger modèle + dataset (~170MB) depuis HF Hub
 HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:7860/health')" || exit 1
+    CMD python -c "import urllib.request,os; urllib.request.urlopen('http://localhost:'+os.environ.get('PORT','7860')+'/health')" || exit 1
 
 # ── Démarrage ─────────────────────────────────────────────────────────────────
-CMD ["uvicorn", "api.app:app", "--host", "0.0.0.0", "--port", "7860"]
+# PORT : injecté par Render au runtime — défaut 7860 pour HF Spaces / tests locaux
+CMD ["sh", "-c", "uvicorn api.app:app --host 0.0.0.0 --port ${PORT:-7860}"]
