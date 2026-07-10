@@ -119,7 +119,10 @@ def predict(data: PredictRequest, model=Depends(get_model)):
     not_found   = []
 
     for cid in data.client_ids:
-        features = scoring_model.get_client_features(cid)
+        try:
+            features = scoring_model.get_client_features(cid)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Dataset lookup error client {cid}: {e}")
 
         if features is None:
             not_found.append(cid)
@@ -129,7 +132,7 @@ def predict(data: PredictRequest, model=Depends(get_model)):
             result = scoring_model.predict(model, features)
             predictions.append(PredictionResponse(client_id=cid, **result))
         except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Erreur client {cid} : {e}")
+            raise HTTPException(status_code=500, detail=f"Prediction error client {cid}: {e}")
 
     # Mise à jour des compteurs de monitoring après chaque appel réussi
     scoring_model.update_stats(predictions, not_found)
