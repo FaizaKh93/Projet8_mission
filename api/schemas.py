@@ -33,10 +33,10 @@ class PredictRequest(BaseModel):
 
     model_config = {
         "json_schema_extra": {
-            "examples": {
-                "client unique":     {"value": {"client_ids": 100002}},
-                "plusieurs clients": {"value": {"client_ids": [100002, 100003, 100004]}},
-            }
+            "examples": [
+                {"client_ids": 100002},
+                {"client_ids": [100002, 100003, 100004]},
+            ]
         }
     }
 
