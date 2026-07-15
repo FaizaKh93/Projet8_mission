@@ -27,6 +27,10 @@ models/*.json
 reports/figures/
 reports/*.pptx
 
+# ── IDE ───────────────────────────────────────────────────────────────────────
+.vscode/
+.ipynb_checkpoints/
+
 # ── Claude Code (mémoire de session) ─────────────────────────────────────────
 .claude/
 
