@@ -14,6 +14,7 @@ Endpoints disponibles :
     GET  /predict/{client_id}/explain   → explication SHAP locale pour un client
     GET  /model/info                    → métadonnées du modèle en production
     GET  /stats                         → statistiques d'usage depuis le démarrage
+    GET  /logs                          → 100 derniers appels loggés depuis le démarrage
 """
 import json
 import time
@@ -56,6 +57,9 @@ app = FastAPI(
 
 logger = get_logger()
 
+_log_store: list[dict] = []
+_MAX_LOGS = 100
+
 
 # ── Dépendances injectées ─────────────────────────────────────────────────────
 
@@ -94,6 +98,7 @@ def root():
             "explain":     "GET  /predict/{client_id}/explain",
             "info":        "GET  /model/info",
             "stats":       "GET  /stats",
+            "logs":        "GET  /logs",
             "docs":        "GET  /docs",
         },
     }
@@ -142,7 +147,7 @@ def predict(data: PredictRequest, model=Depends(get_model)):
 
     scoring_model.update_stats(predictions, not_found)
 
-    logger.info(json.dumps({
+    _entry = {
         "endpoint":    "/predict",
         "n_requested": len(data.client_ids),
         "n_scored":    len(predictions),
@@ -153,7 +158,11 @@ def predict(data: PredictRequest, model=Depends(get_model)):
         ],
         "not_found":   not_found,
         "latency_ms":  round((time.perf_counter() - t0) * 1000, 2),
-    }))
+    }
+    logger.info(json.dumps(_entry))
+    _log_store.append(_entry)
+    if len(_log_store) > _MAX_LOGS:
+        _log_store.pop(0)
 
     return BatchResponse(predictions=predictions, not_found=not_found)
 
@@ -176,14 +185,18 @@ def predict_new(data: NewClientRequest, model=Depends(get_model)):
         prediction = PredictionResponse(client_id=data.client_id, **result)
         scoring_model.update_stats([prediction], [])
 
-        logger.info(json.dumps({
+        _entry = {
             "endpoint":   "/predict/new",
             "client_id":  data.client_id,
             "score":      prediction.score,
             "decision":   prediction.decision,
             "n_features": len(data.features),
             "latency_ms": round((time.perf_counter() - t0) * 1000, 2),
-        }))
+        }
+        logger.info(json.dumps(_entry))
+        _log_store.append(_entry)
+        if len(_log_store) > _MAX_LOGS:
+            _log_store.pop(0)
 
         return prediction
     except Exception as e:
@@ -245,3 +258,14 @@ def stats():
     brancher une base de données ou un outil comme Prometheus.
     """
     return StatsResponse(**scoring_model.get_stats())
+
+
+@app.get("/logs", tags=["Monitoring"])
+def logs():
+    """
+    100 derniers appels aux endpoints /predict et /predict/new depuis le démarrage.
+
+    Ordre anti-chronologique (le plus récent en premier).
+    Remis à zéro à chaque redémarrage du service.
+    """
+    return {"count": len(_log_store), "logs": list(reversed(_log_store))}
