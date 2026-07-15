@@ -21,6 +21,7 @@ dependencies = [
     "uvicorn[standard]>=0.30.0",
     "huggingface-hub>=1.23.0",
     "duckdb>=1.0.0",
+    "evidently>=0.4.0",
 ]
 
 [dependency-groups]
