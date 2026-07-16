@@ -9,6 +9,7 @@ Variable d'environnement MODEL_SOURCE :
 import os
 import re
 import joblib
+from functools import lru_cache
 import numpy as np
 import pandas as pd
 import shap
@@ -21,7 +22,7 @@ _ROOT         = Path(__file__).resolve().parent.parent
 _DATASET_PATH = _ROOT / "data" / "processed" / "train_processed_global.csv"
 
 # URI MLflow Registry — utilisé quand MODEL_SOURCE=mlflow
-_MODEL_URI = "models:/LightGBM_credit_scoring@champion"
+_MODEL_URI = "models:/lgbm-credit-scoring@champion"
 
 # Repos HF Hub — utilisés quand MODEL_SOURCE=hf
 _HF_MODEL_REPO   = "Faiza93/projet8-credit-scoring"
@@ -127,6 +128,7 @@ def get_explainer():
     return _explainer
 
 
+@lru_cache(maxsize=10_000)
 def get_client_features(client_id: int) -> dict | None:
     """
     Lookup des features d'un client.
@@ -156,7 +158,7 @@ def get_client_features(client_id: int) -> dict | None:
         return None
     row = _dataset.loc[client_id]
     return {
-        col: (None if pd.isna(val) else float(val))
+        col: (np.nan if pd.isna(val) else float(val))
         for col, val in row.items()
         if col not in _COLS_EXCLUDE
     }
