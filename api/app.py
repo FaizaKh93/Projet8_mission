@@ -174,7 +174,10 @@ def predict_new(data: NewClientRequest, model=Depends(get_model)):
 
     Cas d'usage : demande de crédit en temps réel — le client n'est pas encore
     dans `train_processed_global.csv`. Les features pré-calculées en amont
-    (par un pipeline ETL ou un data warehouse) sont envoyées directement.
+    sont envoyées directement. L'exemple par défaut contient le **top 20 des
+    features les plus importantes selon SHAP global** (+ colonnes one-hot des
+    features catégorielles). Les 552 noms de features attendus sont disponibles
+    via `GET /features`.
 
     - Features manquantes → NaN, gérées nativement par LightGBM
     - **client_id** optionnel : numéro de dossier assigné par l'appelant
