@@ -246,6 +246,17 @@ def model_info(model=Depends(get_model)):
     return ModelInfoResponse(**scoring_model.get_model_info(model))
 
 
+@app.get("/features", tags=["Monitoring"])
+def features(model=Depends(get_model)):
+    """
+    Liste des 552 noms de features attendus par le modèle.
+
+    Utile pour construire une requête POST /predict/new sans connaître
+    le feature engineering appliqué en amont.
+    """
+    return {"n_features": len(model.feature_name_), "features": model.feature_name_}
+
+
 @app.get("/stats", response_model=StatsResponse, tags=["Monitoring"])
 def stats():
     """
