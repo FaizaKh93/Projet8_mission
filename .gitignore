@@ -27,6 +27,9 @@ models/*.json
 reports/figures/
 reports/*.pptx
 
+# ── Couverture de tests ───────────────────────────────────────────────────────
+.coverage
+
 # ── IDE ───────────────────────────────────────────────────────────────────────
 .vscode/
 .ipynb_checkpoints/

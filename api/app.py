@@ -18,6 +18,7 @@ Endpoints disponibles :
 """
 import json
 import time
+from datetime import datetime, timezone
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Depends, Query
 
@@ -149,6 +150,7 @@ def predict(data: PredictRequest, model=Depends(get_model)):
 
     _entry = {
         "endpoint":    "/predict",
+        "timestamp":   datetime.now(timezone.utc).isoformat(),
         "n_requested": len(data.client_ids),
         "n_scored":    len(predictions),
         "n_not_found": len(not_found),
@@ -190,6 +192,7 @@ def predict_new(data: NewClientRequest, model=Depends(get_model)):
 
         _entry = {
             "endpoint":   "/predict/new",
+            "timestamp":  datetime.now(timezone.utc).isoformat(),
             "client_id":  data.client_id,
             "score":      prediction.score,
             "decision":   prediction.decision,
