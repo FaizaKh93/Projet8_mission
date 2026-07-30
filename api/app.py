@@ -197,6 +197,7 @@ def predict_new(data: NewClientRequest, model=Depends(get_model)):
             "score":      prediction.score,
             "decision":   prediction.decision,
             "n_features": len(data.features),
+            "features":   data.features,
             "latency_ms": round((time.perf_counter() - t0) * 1000, 2),
         }
         logger.info(json.dumps(_entry))
