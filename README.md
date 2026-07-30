@@ -50,8 +50,9 @@ remboursement d'un client à partir d'un modèle LightGBM.
 | POST | `/predict/new` | Score pour un nouveau client (features fournies directement) |
 | GET | `/predict/{id}/explain` | Explication SHAP locale (top 10 features) |
 | GET | `/model/info` | Métadonnées du modèle (AUC, seuil, nombre de features) |
+| GET | `/features` | Liste des 552 noms de features attendus par le modèle |
 | GET | `/stats` | Compteurs depuis le démarrage (requêtes, taux de refus…) |
-| GET | `/logs` | 100 derniers appels loggés (ordre anti-chronologique) |
+| GET | `/logs` | 100 derniers appels loggés avec features entrantes (ordre anti-chronologique) |
 
 Documentation interactive : `/docs` (Swagger UI)
 
@@ -60,7 +61,7 @@ Documentation interactive : `/docs` (Swagger UI)
 ## Modèle
 
 - **Algorithme** : LightGBM (552 features, seuil de décision = 0.46)
-- **Métrique** : AUC = 0.7893 — optimisée sur la fonction de coût métier `10×FN + FP`
+- **Métrique** : AUC = 0.7918 — optimisée sur la fonction de coût métier `10×FN + FP`
 - **Registre** : MLflow Registry (`lgbm-credit-scoring@champion`) + HF Hub (`Faiza93/projet8-credit-scoring`)
 - **Données** : Parquet hébergé sur HF Hub (`Faiza93/projet8-credit-scoring-data`)
 
@@ -82,6 +83,7 @@ uv sync
 |---|---|---|
 | `MODEL_SOURCE` | `hf` \| `mlflow` | Source du modèle (`hf` pour Render, `mlflow` en local) |
 | `MLFLOW_TRACKING_URI` | `file:///…/mlruns` | URI MLflow (mode local uniquement) |
+| `HF_TOKEN` | `hf_…` | Token Hugging Face (optionnel — augmente les rate limits) |
 
 ### Lancer l'API en local
 
